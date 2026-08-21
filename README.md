@@ -1,5 +1,3 @@
-![Header](./images/header.png)
-
 ## My Tech Stack
 
 ![PHP](https://img.shields.io/badge/-PHP-%232c3e50?style=for-the-badge&logo=PHP)
