@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# commit-authorship-guard
+# Blocks commits authored by anyone other than the repository owner.
+# Intentionally not skippable: authorship is never optional.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+./.githooks/check-commit-identity.sh identity
+
+# ─── Delegate to pre-existing hook implementations ───────────────────────────
+for legacy in ".githooks/legacy/pre-commit" ".husky/pre-commit"; do
+    if [[ -x "$legacy" ]]; then
+        "$legacy" "$@" </dev/null
+    fi
+done

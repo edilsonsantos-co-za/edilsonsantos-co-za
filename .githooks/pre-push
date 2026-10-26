@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# commit-authorship-guard
+# Rejects any outgoing commit not authored/committed by the owner, or that
+# carries a Co-authored-by trailer.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+zero_sha="$(printf '0%.0s' {1..40})"
+push_input="$(cat)"
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    [[ -z "${local_sha:-}" ]] && continue
+    [[ "$local_sha" == "$zero_sha" ]] && continue  # branch deletion
+
+    if [[ "$remote_sha" == "$zero_sha" || -z "${remote_sha:-}" ]]; then
+        ./.githooks/check-commit-identity.sh range "$local_sha" --not --remotes=origin
+    else
+        ./.githooks/check-commit-identity.sh range "${remote_sha}..${local_sha}"
+    fi
+done <<< "$push_input"
+
+# ─── Delegate to pre-existing hook implementations ───────────────────────────
+for legacy in ".githooks/legacy/pre-push" ".husky/pre-push"; do
+    if [[ -x "$legacy" ]]; then
+        "$legacy" "$@" <<< "$push_input"
+    fi
+done

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# commit-authorship-guard
+# Rejects Co-authored-by trailers so history keeps a single author.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+./.githooks/check-commit-identity.sh message "$1"
+
+# ─── Delegate to pre-existing hook implementations ───────────────────────────
+for legacy in ".githooks/legacy/commit-msg" ".husky/commit-msg"; do
+    if [[ -x "$legacy" ]]; then
+        "$legacy" "$@" </dev/null
+    fi
+done
