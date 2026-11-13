@@ -1,0 +1,96 @@
+name: Workspace formatting repair
+
+on:
+    workflow_run:
+        workflows: ["CI"]
+        types: [completed]
+
+permissions:
+    contents: write
+    actions: write
+
+concurrency:
+    group: formatting-repair
+    cancel-in-progress: false
+
+jobs:
+    repair:
+        if: >-
+            vars.AUTO_FORMAT_REPAIR == 'true' &&
+            github.event.workflow_run.conclusion == 'failure' &&
+            github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+            github.event.workflow_run.head_repository.full_name == github.repository &&
+            github.event.workflow_run.actor.login != 'github-actions[bot]'
+        runs-on: ubuntu-latest
+        env:
+            GH_TOKEN: ${{ github.token }}
+            CI_WORKFLOW: ${{ vars.CI_WORKFLOW }}
+            DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+            FAILED_SHA: ${{ github.event.workflow_run.head_sha }}
+            FAILED_RUN: ${{ github.event.workflow_run.id }}
+            FAILED_WORKFLOW: ${{ github.event.workflow_run.workflow_id }}
+        steps:
+            - name: Check failure is current CI formatting
+              id: eligible
+              run: |
+                  test -n "$CI_WORKFLOW"
+                  expected="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$CI_WORKFLOW" --jq .id)"
+                  current="$(gh api "repos/$GITHUB_REPOSITORY/commits/$DEFAULT_BRANCH" --jq .sha)"
+                  if [ "$expected" != "$FAILED_WORKFLOW" ] || [ "$current" != "$FAILED_SHA" ]; then exit 0; fi
+                  gh run view "$FAILED_RUN" -R "$GITHUB_REPOSITORY" --log-failed > "$RUNNER_TEMP/failed-ci.log"
+                  if grep -q 'Formatting issues found' "$RUNNER_TEMP/failed-ci.log"; then
+                    echo "eligible=true" >> "$GITHUB_OUTPUT"
+                  fi
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+              if: steps.eligible.outputs.eligible == 'true'
+              with:
+                  ref: ${{ github.event.repository.default_branch }}
+                  persist-credentials: false
+            - name: Check supported repair recipe
+              id: recipe
+              if: steps.eligible.outputs.eligible == 'true'
+              run: |
+                  test "$(git rev-parse HEAD)" = "$FAILED_SHA"
+                  python3 - <<'PY'
+                  import json, os, pathlib
+                  if pathlib.Path("composer.json").exists() and pathlib.Path("package-lock.json").exists():
+                      composer = json.loads(pathlib.Path("composer.json").read_text())["scripts"]
+                      scripts = json.loads(pathlib.Path("package.json").read_text())["scripts"]
+                      if "setup" in composer and "ci:check" in composer and scripts.get("check:fix") == "vp check --fix":
+                          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                              output.write("supported=true\n")
+                  PY
+            - name: Setup PHP
+              if: steps.recipe.outputs.supported == 'true'
+              uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962
+              with:
+                  php-version: ${{ vars.CI_PHP_VERSION || '8.5' }}
+                  tools: composer:v2
+                  coverage: none
+            - name: Setup Node
+              if: steps.recipe.outputs.supported == 'true'
+              uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+              with:
+                  node-version: ${{ vars.CI_NODE_VERSION || '22' }}
+            - name: Repair Markdown and rerun exact checks
+              if: steps.recipe.outputs.supported == 'true'
+              run: |
+                  composer setup
+                  npm run check:fix
+                  if git diff --quiet; then exit 0; fi
+                  if git diff --name-only | grep -qv '\.md$'; then
+                    echo "::warning::Non-Markdown changes require developer review; nothing pushed"
+                    exit 0
+                  fi
+                  composer ci:check
+                  git config user.name 'github-actions[bot]'
+                  git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+                  git add -u
+                  git commit -m 'Fix Markdown formatting after CI failure'
+                  gh auth setup-git
+                  git push origin "HEAD:$DEFAULT_BRANCH"
+                  # GITHUB_TOKEN pushes do not trigger workflows: dispatch the verified new SHA.
+                  gh workflow run "$CI_WORKFLOW" -R "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH"
+                  if gh api "repos/$GITHUB_REPOSITORY/actions/workflows/workspace-deploy.yml" >/dev/null 2>&1; then
+                    gh workflow run workspace-deploy.yml -R "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH"
+                  fi
