@@ -1,0 +1,55 @@
+name: Workspace status
+
+on:
+    workflow_run:
+        workflows: ["Workspace deploy", "Workspace formatting repair"]
+        types: [completed]
+
+permissions:
+    contents: read
+
+jobs:
+    notify:
+        if: github.event.workflow_run.name != 'Workspace status'
+        runs-on: ubuntu-latest
+        steps:
+            - name: Notify configured Google Workspace channels
+              env:
+                  WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+                  WEBHOOK_URLS: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URLS }}
+                  RUN_NAME: ${{ github.event.workflow_run.name }}
+                  RUN_STATUS: ${{ github.event.workflow_run.conclusion }}
+                  RUN_URL: ${{ github.event.workflow_run.html_url }}
+                  RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+                  RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+              run: |
+                  python3 - <<'PY'
+                  import json, os, urllib.request, urllib.parse
+                  urls = json.loads(os.environ.get("WEBHOOK_URLS") or "[]")
+                  if not isinstance(urls, list):
+                      raise ValueError("GOOGLE_CHAT_WEBHOOK_URLS must be a JSON array")
+                  if os.environ.get("WEBHOOK_URL"):
+                      urls.append(os.environ["WEBHOOK_URL"])
+                  urls = list(dict.fromkeys(urls))
+                  if not urls:
+                      print("::warning::No Google Chat channel configured: set GOOGLE_CHAT_WEBHOOK_URL(S)")
+                      raise SystemExit(0)
+                  text = (f"{os.environ['GITHUB_REPOSITORY']}: {os.environ['RUN_NAME']} "
+                          f"{os.environ['RUN_STATUS'].upper()}\n"
+                          f"{os.environ['RUN_BRANCH']} @ {os.environ['RUN_SHA'][:12]}\n{os.environ['RUN_URL']}")
+                  failed = 0
+                  for url in urls:
+                      parsed = urllib.parse.urlsplit(url)
+                      if parsed.scheme != "https" or parsed.hostname != "chat.googleapis.com":
+                          raise ValueError("Only Google Chat HTTPS webhooks are allowed")
+                      req = urllib.request.Request(url, data=json.dumps({"text": text}).encode(),
+                          headers={"Content-Type": "application/json"}, method="POST")
+                      try:
+                          with urllib.request.urlopen(req, timeout=20) as response:
+                              response.read()
+                      except Exception:
+                          failed += 1
+                  if failed:
+                      raise SystemExit(f"Failed to notify {failed} channel(s); webhook values are not logged")
+                  print(f"Notified {len(urls)} channel(s)")
+                  PY
