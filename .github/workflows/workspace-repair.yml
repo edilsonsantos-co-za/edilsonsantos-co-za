@@ -1,3 +1,4 @@
+# workspace-managed-sha256: 3b7e514fc14b0c4335915fe20981b65306a87ffcec318e399caed3d1800aba09
 name: Workspace formatting repair
 
 on:
